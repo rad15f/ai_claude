@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YouTube Bot Detector</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      color: #1a1a1a;
+      background: #fff;
+      width: 320px;
+      padding: 16px;
+    }
+
+    h1 {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 14px;
+      color: #cc0000;
+    }
+
+    section {
+      margin-bottom: 16px;
+    }
+
+    h2 {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #666;
+      margin-bottom: 8px;
+    }
+
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .stat-value {
+      font-weight: 600;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 4px;
+      color: #444;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      margin-bottom: 4px;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    button {
+      padding: 5px 12px;
+      background: #cc0000;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #aa0000;
+    }
+
+    ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    ul li {
+      display: flex;
+      justify-content: space-between;
+      padding: 2px 0;
+      font-size: 12px;
+      border-bottom: 1px solid #f5f5f5;
+    }
+
+    .threshold-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #threshold-label {
+      font-weight: 600;
+      min-width: 32px;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+  </style>
+</head>
+<body>
+  <h1>YouTube Bot Detector</h1>
+
+  <!-- Stats -->
+  <section>
+    <h2>Current Video</h2>
+    <div class="stat-row">
+      <span>Comments scanned</span>
+      <span class="stat-value" id="total-scanned">—</span>
+    </div>
+    <div class="stat-row">
+      <span>Flagged as bots</span>
+      <span class="stat-value" id="flagged-count">—</span>
+    </div>
+  </section>
+
+  <!-- Top signals -->
+  <section>
+    <h2>Top Signals Detected</h2>
+    <ul id="top-signals">
+      <li><span>No data yet</span></li>
+    </ul>
+  </section>
+
+  <!-- Sensitivity -->
+  <section>
+    <h2>Sensitivity Threshold</h2>
+    <div class="threshold-row">
+      <input type="range" id="threshold" min="40" max="80" value="60" step="5" />
+      <span id="threshold-label">60%</span>
+    </div>
+    <div class="toggle-row">
+      <input type="checkbox" id="hide-toggle" />
+      <label for="hide-toggle">Hide comments above threshold</label>
+    </div>
+  </section>
+
+  <!-- API key -->
+  <section>
+    <h2>YouTube API Key</h2>
+    <label for="api-key">Your API key (stored locally)</label>
+    <input type="password" id="api-key" placeholder="AIza..." autocomplete="off" />
+    <div class="row">
+      <button id="save-key">Save</button>
+      <span style="font-size:11px;color:#888">Used for channel lookups only</span>
+    </div>
+  </section>
+
+  <script src="src/popup.ts" type="module"></script>
+</body>
+</html>
