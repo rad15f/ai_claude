@@ -1,12 +1,36 @@
 // Content script — DOM scraping and badge injection
 // No heavy computation here; send work to background.ts via sendMessage
 
-import type { Comment, ExtensionMessage, ScoreBreakdown } from './types.js'
+import type { Comment, ExtensionMessage, ScoreBreakdown, VideoStats } from './types.js'
 
 const BATCH_INTERVAL_MS = 300
 const pendingComments: Map<string, Comment> = new Map()
 let batchTimer: ReturnType<typeof setTimeout> | null = null
 let currentVideoId = ''
+
+// ─── Stats tracking ───────────────────────────────────────────────────────────
+
+const stats: VideoStats = {
+  videoId: '',
+  totalScanned: 0,
+  flaggedCount: 0,
+  signalFrequency: {},
+}
+
+function resetStats(videoId: string): void {
+  stats.videoId = videoId
+  stats.totalScanned = 0
+  stats.flaggedCount = 0
+  stats.signalFrequency = {}
+}
+
+function recordScore(score: ScoreBreakdown, threshold: number): void {
+  stats.totalScanned++
+  if (score.final >= threshold) stats.flaggedCount++
+  for (const signal of score.topSignals) {
+    stats.signalFrequency[signal] = (stats.signalFrequency[signal] ?? 0) + 1
+  }
+}
 
 // ─── Video ID ─────────────────────────────────────────────────────────────────
 
@@ -67,21 +91,22 @@ function extractChannelId(url: string): string | null {
 
 // ─── Badge injection ──────────────────────────────────────────────────────────
 
+// Map commentId → shadow host so we can reach the badge later
+const badgeHosts: Map<string, ShadowRoot> = new Map()
+
 function injectBadge(commentEl: Element, commentId: string): void {
-  const existing = commentEl.querySelector('.ytbd-badge')
-  if (existing) return
+  if (badgeHosts.has(commentId)) return
 
   const timestampEl = commentEl.querySelector('.published-time-text, yt-formatted-string.published-time-text')
   if (!timestampEl) return
 
   const badge = document.createElement('span')
   badge.className = 'ytbd-badge ytbd-badge--loading'
-  badge.dataset['commentId'] = commentId
+  badge.textContent = '…'
   badge.setAttribute('aria-label', 'Bot probability score loading')
 
-  // Shadow DOM wrapper to isolate styles from YouTube's CSS
   const host = document.createElement('span')
-  const shadow = host.attachShadow({ mode: 'closed' })
+  const shadow = host.attachShadow({ mode: 'open' })
 
   const style = document.createElement('style')
   style.textContent = BADGE_STYLES
@@ -89,19 +114,23 @@ function injectBadge(commentEl: Element, commentId: string): void {
   shadow.appendChild(badge)
 
   timestampEl.insertAdjacentElement('afterend', host)
+  badgeHosts.set(commentId, shadow)
 }
 
 function updateBadge(commentId: string, score: ScoreBreakdown): void {
-  const badge = document.querySelector<HTMLElement>(`.ytbd-badge[data-comment-id="${commentId}"]`)
+  const shadow = badgeHosts.get(commentId)
+  if (!shadow) return
+
+  const badge = shadow.querySelector<HTMLElement>('.ytbd-badge')
   if (!badge) return
 
   const pct = Math.round(score.final * 100)
   badge.textContent = `${pct}%`
   badge.className = `ytbd-badge ytbd-badge--${score.classification}`
   badge.setAttribute('aria-label', `Bot probability: ${pct}%`)
-  badge.title = score.topSignals.join(' · ') || score.classification
-
-  badge.classList.remove('ytbd-badge--loading')
+  badge.title = score.topSignals.length
+    ? score.topSignals.join(' · ')
+    : score.classification
 }
 
 const BADGE_STYLES = `
@@ -109,18 +138,19 @@ const BADGE_STYLES = `
     display: inline-block;
     font-size: 11px;
     font-weight: 600;
-    padding: 1px 5px;
+    padding: 1px 6px;
     border-radius: 4px;
     margin-left: 6px;
     vertical-align: middle;
-    min-width: 28px;
+    min-width: 32px;
     text-align: center;
     cursor: default;
     transition: background 0.3s, color 0.3s;
   }
   .ytbd-badge--loading {
     background: #e5e5e5;
-    color: #888;
+    color: #aaa;
+    font-size: 10px;
   }
   .ytbd-badge--human {
     background: #d4edda;
@@ -138,25 +168,46 @@ const BADGE_STYLES = `
 
 // ─── Batch processing ─────────────────────────────────────────────────────────
 
-function scheduleBatch(): void {
-  if (batchTimer !== null) return
-  batchTimer = setTimeout(flushBatch, BATCH_INTERVAL_MS)
+async function getThreshold(): Promise<number> {
+  const result = await chrome.storage.local.get('settings')
+  const s = result['settings'] as { sensitivityThreshold?: number } | undefined
+  return (s?.sensitivityThreshold ?? 60) / 100
 }
 
-function flushBatch(): void {
+function scheduleBatch(): void {
+  if (batchTimer !== null) return
+  batchTimer = setTimeout(() => { void flushBatch() }, BATCH_INTERVAL_MS)
+}
+
+async function flushBatch(): Promise<void> {
   batchTimer = null
   if (pendingComments.size === 0) return
+
+  const threshold = await getThreshold()
 
   for (const [, comment] of pendingComments) {
     const msg: ExtensionMessage = { type: 'SCORE_COMMENT', comment }
     chrome.runtime.sendMessage(msg, (response: ExtensionMessage | undefined) => {
+      void chrome.runtime.lastError  // suppress disconnected errors
       if (!response || response.type !== 'SCORE_COMMENT_RESULT') return
       updateBadge(response.commentId, response.score)
+      recordScore(response.score, threshold)
     })
   }
 
   pendingComments.clear()
 }
+
+// ─── Message listener (from popup) ───────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener(
+  (message: ExtensionMessage, _sender, sendResponse) => {
+    if (message.type === 'GET_VIDEO_STATS') {
+      sendResponse({ type: 'VIDEO_STATS_RESULT', stats } satisfies ExtensionMessage)
+    }
+    return false
+  }
+)
 
 // ─── MutationObserver ─────────────────────────────────────────────────────────
 
@@ -166,7 +217,7 @@ function processNode(node: Node): void {
   const selectors = ['ytd-comment-renderer', 'ytd-comment-reply-renderer']
   for (const sel of selectors) {
     if (node.matches(sel)) handleCommentElement(node)
-    node.querySelectorAll(sel).forEach(handleCommentElement)
+    Array.from(node.querySelectorAll(sel)).forEach(handleCommentElement)
   }
 }
 
@@ -190,7 +241,7 @@ function startObserver(): void {
 
   observer.observe(document.body, { childList: true, subtree: true })
 
-  // Scan any already-rendered comments
+  // Scan already-rendered comments
   Array.from(document.querySelectorAll('ytd-comment-renderer, ytd-comment-reply-renderer'))
     .forEach(handleCommentElement)
 }
@@ -200,12 +251,14 @@ function startObserver(): void {
 function onNavigate(): void {
   currentVideoId = getVideoId()
   pendingComments.clear()
+  badgeHosts.clear()
+  resetStats(currentVideoId)
 }
 
-// YouTube fires yt-navigate-finish for SPA navigations
 window.addEventListener('yt-navigate-finish', onNavigate)
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
 currentVideoId = getVideoId()
+resetStats(currentVideoId)
 startObserver()
