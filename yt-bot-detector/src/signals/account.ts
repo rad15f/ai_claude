@@ -12,76 +12,86 @@ const AUTO_HANDLE_RE = /^@?user-[a-z0-9]{8,}$/i
 
 export function scoreAccountSignals(profile: ChannelProfile): AccountSignalResult {
   const signals: string[] = []
-  let score = 0
+  // Collect weights of every signal that fires, then combine via probabilistic OR:
+  //   score = 1 - ∏(1 - wᵢ)
+  // This prevents double-penalisation and naturally stays ≤ 1.0 without clamping.
+  const fired: number[] = []
 
   const ageMs = Date.now() - new Date(profile.accountCreatedAt).getTime()
   const ageDays = ageMs / MS_PER_DAY
 
-  // 1. Account age (weight: 0.20)
-  if (ageDays < 30) {
-    score += 0.20
+  // 1. Account age — mutually exclusive tiers (else-if), so only one weight fires
+  if (ageDays < 7) {
+    fired.push(0.40)
+    signals.push(`Brand-new account (${Math.round(ageDays)}d old)`)
+  } else if (ageDays < 30) {
+    fired.push(0.28)
     signals.push(`New account (${Math.round(ageDays)}d old)`)
   } else if (ageDays < 180) {
-    score += 0.10
+    fired.push(0.14)
     signals.push(`Young account (${Math.round(ageDays / 30)}mo old)`)
   }
 
-  // 2. Subscriber count (weight: 0.10)
+  // 2. Subscriber count — mutually exclusive tiers
   if (profile.subscriberCount === 0) {
-    score += 0.10
+    fired.push(0.14)
     signals.push('0 subscribers')
   } else if (profile.subscriberCount < 10) {
-    score += 0.05
+    fired.push(0.07)
     signals.push(`${profile.subscriberCount} subscribers`)
   }
 
-  // 3. Video count (weight: 0.08)
+  // 3. Video count
   if (profile.videoCount === 0) {
-    score += 0.08
+    fired.push(0.12)
     signals.push('No videos uploaded')
   }
 
-  // 4. No channel description (weight: 0.05)
+  // 4. No channel description
   if (!profile.hasDescription) {
-    score += 0.05
+    fired.push(0.07)
     signals.push('No channel description')
   }
 
-  // 5. No banner image (weight: 0.03)
+  // 5. No banner image
   if (!profile.hasBannerImage) {
-    score += 0.03
+    fired.push(0.05)
     signals.push('No banner image')
   }
 
-  // 6. Hidden subscriber count on small channel (weight: 0.04)
+  // 6. Hidden subscriber count on small channel
   if (profile.hiddenSubscriberCount && profile.subscriberCount < 1000) {
-    score += 0.04
+    fired.push(0.05)
     signals.push('Hidden subscriber count')
   }
 
-  // 7. No country set (weight: 0.02)
+  // 7. No country set
   if (!profile.country) {
-    score += 0.02
+    fired.push(0.03)
     signals.push('No country set')
   }
 
-  // 8. Abnormal view/sub ratio — very high views but almost no subs (weight: 0.05)
+  // 8. Abnormal view/sub ratio — very high views but almost no subs
   if (
     profile.subscriberCount > 0 &&
     profile.viewCount > 0 &&
     profile.viewCount / profile.subscriberCount > 500 &&
     profile.subscriberCount < 100
   ) {
-    score += 0.05
+    fired.push(0.06)
     signals.push('Abnormal view/sub ratio')
   }
 
-  // 9. Auto-generated handle (weight: 0.08)
-  // We don't have the handle directly in the profile, but check channel ID patterns
+  // 9. Auto-generated handle
   if (AUTO_HANDLE_RE.test(profile.channelId)) {
-    score += 0.08
+    fired.push(0.10)
     signals.push('Auto-generated handle')
   }
 
-  return { score: Math.min(1, score), signals }
+  // Probabilistic OR: each additional signal has diminishing impact
+  const score = fired.length === 0
+    ? 0
+    : 1 - fired.reduce((acc, w) => acc * (1 - w), 1)
+
+  return { score, signals }
 }

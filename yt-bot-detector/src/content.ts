@@ -193,7 +193,7 @@ const BADGE_STYLES = `
 async function getThreshold(): Promise<number> {
   const result = await chrome.storage.local.get('settings')
   const s = result['settings'] as { sensitivityThreshold?: number } | undefined
-  return (s?.sensitivityThreshold ?? 60) / 100
+  return (s?.sensitivityThreshold ?? 40) / 100
 }
 
 function scheduleBatch(): void {

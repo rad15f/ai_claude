@@ -8,12 +8,22 @@ export interface CrossCommentSignalResult {
 // Session cache: commentId → Comment
 const sessionComments: Map<string, Comment> = new Map()
 
+// Author history: authorKey → all their comments this session
+const authorHistory: Map<string, Comment[]> = new Map()
+
 export function registerComment(comment: Comment): void {
   sessionComments.set(comment.id, comment)
+
+  // Track every comment per author so we can detect self-repetition later
+  const authorKey = comment.author.channelId ?? comment.author.name
+  const history = authorHistory.get(authorKey) ?? []
+  history.push(comment)
+  authorHistory.set(authorKey, history)
 }
 
 export function clearSessionCache(): void {
   sessionComments.clear()
+  authorHistory.clear()
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -97,6 +107,32 @@ export function scoreCrossCommentSignals(comment: Comment): CrossCommentSignalRe
     if (clusterCount >= 2) {
       score = Math.max(score, 0.25)
       signals.push('Username cluster pattern')
+    }
+  }
+
+  // Same-author self-similarity: does this author keep posting near-identical text?
+  // registerComment already stored this comment, so exclude it by id when comparing.
+  const authorKey = comment.author.channelId ?? comment.author.name
+  const prevByAuthor = (authorHistory.get(authorKey) ?? []).filter(c => c.id !== comment.id)
+
+  if (prevByAuthor.length > 0) {
+    let selfSimilarCount = 0
+    for (const prev of prevByAuthor) {
+      const prevNorm = normalize(prev.text)
+      if (prevNorm.length < 10) continue
+      if (normText === prevNorm) {
+        selfSimilarCount++
+      } else {
+        const lenDiff = Math.abs(normText.length - prevNorm.length)
+        if (lenDiff < 25) {
+          const dist = levenshtein(normText, prevNorm)
+          if (dist < 15) selfSimilarCount++
+        }
+      }
+    }
+    if (selfSimilarCount > 0) {
+      score = Math.max(score, 0.45)
+      signals.push(`Self-repeating author (${selfSimilarCount} similar own comment${selfSimilarCount > 1 ? 's' : ''})`)
     }
   }
 

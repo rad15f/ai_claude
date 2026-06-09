@@ -27,80 +27,88 @@ const TEMPLATE_PATTERNS = [
 
 export function scoreTextSignals(text: string): TextSignalResult {
   const signals: string[] = []
-  let score = 0
+  // Collect weights of every signal that fires, then combine via probabilistic OR:
+  //   score = 1 - ∏(1 - wᵢ)
+  // Each additional signal has diminishing impact; result naturally stays ≤ 1.0.
+  const fired: number[] = []
 
   const lower = text.toLowerCase()
   const words = text.trim().split(/\s+/)
   const wordCount = words.length
 
-  // 1. External URL — not linking to YouTube (weight: 0.40)
+  // 1. URL signals — mutually exclusive (else-if): external URL takes precedence
   if (/https?:\/\/(?!(?:www\.)?youtu(?:be\.com|\.be))[^\s]+/.test(text)) {
-    score += 0.40
+    fired.push(0.55)
     signals.push('External URL')
-  }
-
-  // 1b. Disguised domain — e.g. "Site•Com", "site[dot]com", "site .com" (weight: 0.30)
-  else if (/\b\w+[•·\[\(](?:dot|com|net|org|io)\b|\b\w+\s*\.\s*(?:com|net|org|io|co)\b/i.test(text)) {
-    score += 0.30
+  } else if (
+    /\b\w+[·•․‧⋅◦⦁⦿・･•·◦∙⋅\[\(](?:dot|com|net|org|io|co)\b/i.test(text) ||
+    /\b\w+\s*\(dot\)\s*\w{2,6}\b/i.test(text) ||
+    /\b\w+\s+dot\s+(?:com|net|org|io|co)\b/i.test(text)
+  ) {
+    fired.push(0.45)
     signals.push('Disguised URL')
   }
 
-  // 1c. Hashtag spam — 3 or more hashtags = promotional (weight: 0.15)
+  // 2. Hashtag spam — 3 or more hashtags
   const hashtagCount = (text.match(/#\w+/g) ?? []).length
   if (hashtagCount >= 3) {
-    score += 0.15
+    fired.push(0.20)
     signals.push(`Hashtag spam (${hashtagCount} tags)`)
   }
 
-  // 2. Promotional keywords (weight: 0.25)
+  // 3. Promotional keywords
   const foundPromo = PROMO_KEYWORDS.find(kw => lower.includes(kw))
   if (foundPromo) {
-    score += 0.25
+    fired.push(0.30)
     signals.push(`Promo: "${foundPromo}"`)
   }
 
-  // 3. Income template fill-in (weight: 0.30)
+  // 4. Income template fill-in
   const foundTemplate = TEMPLATE_PATTERNS.find(p => p.test(text))
   if (foundTemplate) {
-    score += 0.30
+    fired.push(0.30)
     signals.push('Income template')
   }
 
-  // 4. Emoji-only or very short comment — <4 words (weight: 0.10)
+  // 5. Emoji-only or very short comment — <4 words
   const emojiOnly = /^[\p{Emoji}\s]+$/u.test(text.trim())
   if (emojiOnly || wordCount < 4) {
-    score += 0.10
+    fired.push(0.10)
     signals.push('Very short / emoji-only')
   }
 
-  // 5. All-caps ratio > 60% (weight: 0.10)
+  // 6. All-caps ratio > 60%
   const letters = text.replace(/[^a-zA-Z]/g, '')
   if (letters.length > 8) {
     const upperRatio = (text.match(/[A-Z]/g) ?? []).length / letters.length
     if (upperRatio > 0.6) {
-      score += 0.10
+      fired.push(0.10)
       signals.push('Excessive caps')
     }
   }
 
-  // 6. Repeated characters: "heeelllo", "!!!!!!" (weight: 0.08)
+  // 7. Repeated characters: "heeelllo", "!!!!!!"
   if (/(.)\1{4,}/.test(text)) {
-    score += 0.08
+    fired.push(0.08)
     signals.push('Repeated characters')
   }
 
-  // 7. Non-ASCII / zero-width spam characters (weight: 0.10)
-  // Zero-width or Unicode lookalikes are a strong spam signal
+  // 8. Non-ASCII / zero-width spam characters
   if (/[​-‍﻿­]/.test(text)) {
-    score += 0.10
+    fired.push(0.10)
     signals.push('Zero-width characters')
   } else {
     const nonAsciiRatio = (text.match(/[^\x00-\x7F]/g) ?? []).length / text.length
     if (nonAsciiRatio > 0.35 && wordCount > 4) {
-      score += 0.08
+      fired.push(0.08)
       signals.push('High non-ASCII ratio')
     }
   }
 
-  return { score: Math.min(1, score), signals }
+  // Probabilistic OR
+  const score = fired.length === 0
+    ? 0
+    : 1 - fired.reduce((acc, w) => acc * (1 - w), 1)
+
+  return { score, signals }
 }
