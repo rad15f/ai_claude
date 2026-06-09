@@ -39,37 +39,54 @@ function getVideoId(): string {
   return params.get('v') ?? ''
 }
 
-// ─── Comment extraction ───────────────────────────────────────────────────────
+// ─── Comment extraction (updated for new YouTube DOM) ─────────────────────────
+
+function extractCommentId(el: Element): string | null {
+  // Extract unique comment ID from permalink: ?v=XXX&lc=COMMENT_ID
+  const permalink = el.querySelector('a[href*="lc="]') as HTMLAnchorElement | null
+  if (!permalink) return null
+  const lc = new URLSearchParams(new URL(permalink.href).search).get('lc')
+  return lc ?? null
+}
 
 function extractComment(el: Element): Comment | null {
-  const id = el.getAttribute('id') ?? el.getAttribute('data-comment-id') ?? ''
+  const id = extractCommentId(el)
   if (!id) return null
 
-  const text =
-    el.querySelector('#content-text')?.textContent?.trim() ?? ''
+  // Comment text lives in yt-attributed-string > span
+  const text = el.querySelector('yt-attributed-string span')?.textContent?.trim() ?? ''
+  if (!text) return null
 
-  const authorEl = el.querySelector('#author-text')
-  const authorName = authorEl?.textContent?.trim() ?? ''
-  const channelUrl = (authorEl as HTMLAnchorElement | null)?.href ?? null
+  // Author
+  const authorAnchor = el.querySelector('h3 a') as HTMLAnchorElement | null
+  const authorName = authorAnchor?.textContent?.trim() ?? ''
+  const channelUrl = authorAnchor?.href ?? null
   const channelId = channelUrl ? extractChannelId(channelUrl) : null
 
-  const avatarEl = el.querySelector('#author-thumbnail img') as HTMLImageElement | null
+  // Avatar
+  const avatarEl = el.querySelector('img') as HTMLImageElement | null
   const avatarUrl = avatarEl?.src ?? null
 
-  const likesEl = el.querySelector('#vote-count-middle')
-  const likes = parseInt(likesEl?.textContent?.trim() ?? '0', 10) || 0
+  // Timestamp (the link to the comment itself)
+  const publishedAt = (el.querySelector('ytd-comment-view-model a[href*="watch"]') as HTMLAnchorElement | null)
+    ?.textContent?.trim() ?? ''
 
-  const repliesEl = el.querySelector('#replies #header')
-  const replyCount = parseInt(
-    repliesEl?.textContent?.replace(/\D/g, '') ?? '0',
-    10
-  ) || 0
+  // Likes — parse number from engagement bar text
+  const likesRaw = el.querySelector('[aria-label*="like"], [aria-label*="Like"]')?.textContent?.trim() ?? '0'
+  const likes = parseInt(likesRaw.replace(/[^\d]/g, '') || '0', 10)
 
-  const timestampEl = el.querySelector('.published-time-text a, yt-formatted-string.published-time-text')
-  const publishedAt = timestampEl?.textContent?.trim() ?? ''
+  // Replies count — approximate from the replies button text
+  const repliesRaw = el.querySelector('ytd-comment-replies-renderer')?.textContent?.trim() ?? ''
+  const replyMatch = repliesRaw.match(/(\d+)\s+repl/i)
+  const replyCount = replyMatch ? parseInt(replyMatch[1] ?? '0', 10) : 0
 
-  const isReply = el.tagName.toLowerCase() === 'ytd-comment-reply-renderer'
-  const isVideoOwner = el.hasAttribute('is-highlighted') || el.hasAttribute('author-is-posting-owner')
+  // Is this a reply? Replies live inside ytd-comment-replies-renderer
+  const isReply = el.closest('ytd-comment-replies-renderer') !== null
+
+  // Is video owner? Check for creator badge / heart
+  const isVideoOwner =
+    el.querySelector('ytd-creator-heart-renderer') !== null ||
+    el.hasAttribute('author-is-posting-owner')
 
   return {
     id,
@@ -85,19 +102,24 @@ function extractComment(el: Element): Comment | null {
 }
 
 function extractChannelId(url: string): string | null {
-  const match = url.match(/\/(channel|c|user)\/([^/?]+)/) ?? url.match(/@([^/?]+)/)
-  return match?.[2] ?? match?.[1] ?? null
+  // Handles /@handle, /channel/ID, /c/name, /user/name
+  const match =
+    url.match(/\/@([^/?]+)/) ??
+    url.match(/\/(channel|c|user)\/([^/?]+)/)
+  return match?.[1] ?? match?.[2] ?? null
 }
 
 // ─── Badge injection ──────────────────────────────────────────────────────────
 
-// Map commentId → shadow host so we can reach the badge later
 const badgeHosts: Map<string, ShadowRoot> = new Map()
 
 function injectBadge(commentEl: Element, commentId: string): void {
   if (badgeHosts.has(commentId)) return
 
-  const timestampEl = commentEl.querySelector('.published-time-text, yt-formatted-string.published-time-text')
+  // Inject after the timestamp anchor
+  const timestampEl =
+    commentEl.querySelector('ytd-comment-view-model a[href*="watch"]') ??
+    commentEl.querySelector('yt-formatted-string')
   if (!timestampEl) return
 
   const badge = document.createElement('span')
@@ -188,7 +210,7 @@ async function flushBatch(): Promise<void> {
   for (const [, comment] of pendingComments) {
     const msg: ExtensionMessage = { type: 'SCORE_COMMENT', comment }
     chrome.runtime.sendMessage(msg, (response: ExtensionMessage | undefined) => {
-      void chrome.runtime.lastError  // suppress disconnected errors
+      void chrome.runtime.lastError
       if (!response || response.type !== 'SCORE_COMMENT_RESULT') return
       updateBadge(response.commentId, response.score)
       recordScore(response.score, threshold)
@@ -211,19 +233,18 @@ chrome.runtime.onMessage.addListener(
 
 // ─── MutationObserver ─────────────────────────────────────────────────────────
 
+// YouTube's new comment DOM uses ytd-comment-thread-renderer
+const COMMENT_SELECTOR = 'ytd-comment-thread-renderer'
+
 function processNode(node: Node): void {
   if (!(node instanceof Element)) return
-
-  const selectors = ['ytd-comment-renderer', 'ytd-comment-reply-renderer']
-  for (const sel of selectors) {
-    if (node.matches(sel)) handleCommentElement(node)
-    Array.from(node.querySelectorAll(sel)).forEach(handleCommentElement)
-  }
+  if (node.matches(COMMENT_SELECTOR)) handleCommentElement(node)
+  Array.from(node.querySelectorAll(COMMENT_SELECTOR)).forEach(handleCommentElement)
 }
 
 function handleCommentElement(el: Element): void {
   const comment = extractComment(el)
-  if (!comment || !comment.text) return
+  if (!comment) return
 
   injectBadge(el, comment.id)
   pendingComments.set(comment.id, comment)
@@ -242,7 +263,7 @@ function startObserver(): void {
   observer.observe(document.body, { childList: true, subtree: true })
 
   // Scan already-rendered comments
-  Array.from(document.querySelectorAll('ytd-comment-renderer, ytd-comment-reply-renderer'))
+  Array.from(document.querySelectorAll(COMMENT_SELECTOR))
     .forEach(handleCommentElement)
 }
 
