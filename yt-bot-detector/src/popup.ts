@@ -33,14 +33,16 @@ async function init(): Promise<void> {
 
 async function loadVideoStats(): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  if (!tab?.id) return
+  if (!tab?.id || !tab.url?.includes('youtube.com/watch')) return
 
   const msg: ExtensionMessage = {
     type: 'GET_VIDEO_STATS',
-    videoId: new URLSearchParams(new URL(tab.url ?? '').search).get('v') ?? '',
+    videoId: new URLSearchParams(new URL(tab.url).search).get('v') ?? '',
   }
 
   chrome.tabs.sendMessage(tab.id, msg, (response: ExtensionMessage | undefined) => {
+    // Suppress "receiving end does not exist" — content script not ready yet
+    void chrome.runtime.lastError
     if (!response || response.type !== 'VIDEO_STATS_RESULT') return
     renderStats(response.stats)
   })

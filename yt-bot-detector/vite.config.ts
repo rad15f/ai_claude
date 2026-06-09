@@ -14,15 +14,5 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: true,
-    rollupOptions: {
-      // Transformers.js is large — keep it in the background bundle only
-      output: {
-        manualChunks(id) {
-          if (id.includes('@xenova/transformers')) {
-            return 'transformers';
-          }
-        },
-      },
-    },
   },
 });
