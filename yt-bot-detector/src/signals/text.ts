@@ -39,6 +39,19 @@ export function scoreTextSignals(text: string): TextSignalResult {
     signals.push('External URL')
   }
 
+  // 1b. Disguised domain — e.g. "Site•Com", "site[dot]com", "site .com" (weight: 0.30)
+  else if (/\b\w+[•·\[\(](?:dot|com|net|org|io)\b|\b\w+\s*\.\s*(?:com|net|org|io|co)\b/i.test(text)) {
+    score += 0.30
+    signals.push('Disguised URL')
+  }
+
+  // 1c. Hashtag spam — 3 or more hashtags = promotional (weight: 0.15)
+  const hashtagCount = (text.match(/#\w+/g) ?? []).length
+  if (hashtagCount >= 3) {
+    score += 0.15
+    signals.push(`Hashtag spam (${hashtagCount} tags)`)
+  }
+
   // 2. Promotional keywords (weight: 0.25)
   const foundPromo = PROMO_KEYWORDS.find(kw => lower.includes(kw))
   if (foundPromo) {

@@ -47,18 +47,38 @@ async function cacheChannel(profile: ChannelProfile): Promise<void> {
 }
 
 async function fetchChannelProfile(channelId: string, apiKey: string): Promise<ChannelProfile | null> {
+  // Channel IDs start with "UC"; everything else is a handle (e.g. "OliSW" from /@OliSW)
+  const idParam = channelId.startsWith('UC')
+    ? `id=${encodeURIComponent(channelId)}`
+    : `forHandle=${encodeURIComponent(channelId)}`
+
   const url =
     `${YT_API_BASE}/channels?part=snippet,statistics,brandingSettings,status` +
-    `&id=${encodeURIComponent(channelId)}&key=${encodeURIComponent(apiKey)}`
+    `&${idParam}&key=${encodeURIComponent(apiKey)}`
+
+  console.log(`[ytbd] Fetching channel: ${idParam}`)
 
   const res = await fetch(url)
-  if (!res.ok) return null
+  if (!res.ok) {
+    console.warn(`[ytbd] API error ${res.status} for ${channelId}`)
+    return null
+  }
 
   const data = await res.json() as { items?: YoutubeChannelItem[] }
-  const item = data.items?.[0]
-  if (!item) return null
+  console.log(`[ytbd] API response for ${channelId}:`, {
+    itemCount: data.items?.length ?? 0,
+    publishedAt: data.items?.[0]?.snippet.publishedAt,
+    subscribers: data.items?.[0]?.statistics.subscriberCount,
+    videos: data.items?.[0]?.statistics.videoCount,
+  })
 
-  return {
+  const item = data.items?.[0]
+  if (!item) {
+    console.warn(`[ytbd] No channel found for: ${channelId}`)
+    return null
+  }
+
+  const profile: ChannelProfile = {
     channelId,
     accountCreatedAt: item.snippet.publishedAt,
     subscriberCount: parseInt(item.statistics.subscriberCount ?? '0', 10),
@@ -71,6 +91,9 @@ async function fetchChannelProfile(channelId: string, apiKey: string): Promise<C
     hiddenSubscriberCount: item.statistics.hiddenSubscriberCount === true,
     fetchedAt: Date.now(),
   }
+
+  console.log(`[ytbd] Profile built for ${channelId}:`, profile)
+  return profile
 }
 
 // ─── Author AI profile (session-scoped) ──────────────────────────────────────
