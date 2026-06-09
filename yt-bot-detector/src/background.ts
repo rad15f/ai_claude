@@ -19,7 +19,7 @@ const YT_API_BASE = 'https://www.googleapis.com/youtube/v3'
 async function getSettings(): Promise<StoredSettings> {
   const result = await chrome.storage.local.get('settings')
   return (result['settings'] as StoredSettings | undefined) ?? {
-    sensitivityThreshold: 60,
+    sensitivityThreshold: 40,
     hideAboveThreshold: false,
     serverSyncEnabled: false,
   }
