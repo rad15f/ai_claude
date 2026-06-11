@@ -11,11 +11,12 @@ function classify(score: number): BotClassification {
 
 export interface ScorerInput {
   comment: Comment
-  aiScore: number         // 0–1, pass 0 if model not ready yet
+  aiScore: number         // 0–1; pass 0 when model is not ready
+  aiReady: boolean        // true only when the AI classifier returned a real score
   authorProfile?: AuthorAIProfile
 }
 
-export function scoreComment({ comment, aiScore, authorProfile }: ScorerInput): ScoreBreakdown {
+export function scoreComment({ comment, aiScore, aiReady, authorProfile }: ScorerInput): ScoreBreakdown {
   const accountResult = comment.channel
     ? scoreAccountSignals(comment.channel)
     : { score: 0, signals: [] as string[] }
@@ -28,22 +29,35 @@ export function scoreComment({ comment, aiScore, authorProfile }: ScorerInput): 
 
   // ─── Weight sets ────────────────────────────────────────────────────────────
   //
-  // Phase 2 (current — AI classifier not yet active, aiScore always 0):
-  //   Short (<50 words): account 30% + text 55% + cross 10% + AI  5% = 100%
-  //   Long  (≥50 words): account 25% + text 45% + cross 10% + AI 20% = 100%
-  //
-  // Phase 3 (once Transformers.js model ships — update weights below):
-  //   Short (<50 words): account 40% + text 35% + cross 10% + AI 15% = 100%
+  // Phase 3 (AI classifier active):
+  //   Short (<50 words): account 40% + text 30% + cross 15% + AI 15% = 100%
   //   Long  (≥50 words): account 35% + text 25% + cross 15% + AI 25% = 100%
   //
-  // Rationale for Phase 3 shift: text weight drops because AI absorbs part of its
-  // role. Account weight rises because AI frees text from carrying the full burden
-  // of non-account signals.
+  // Phase 2 fallback (model loading / unavailable — AI weight redistributed):
+  //   Short (<50 words): account 35% + text 50% + cross 15% + AI  0% = 100%
+  //   Long  (≥50 words): account 35% + text 45% + cross 20% + AI  0% = 100%
+  //
+  // Rationale: when AI is absent, text carries the primary linguistic signal.
+  // Cross-comment weight rises on long comments because verbatim repetition of
+  // long text is a very strong bot indicator even without AI classification.
   // ─────────────────────────────────────────────────────────────────────────────
-  const aiWeight      = isLong ? 0.20 : 0.05
-  const accountWeight = isLong ? 0.25 : 0.30
-  const textWeight    = isLong ? 0.45 : 0.55
-  const crossWeight   = 0.10
+
+  let aiWeight: number
+  let accountWeight: number
+  let textWeight: number
+  let crossWeight: number
+
+  if (aiReady) {
+    aiWeight      = isLong ? 0.25 : 0.15
+    accountWeight = isLong ? 0.35 : 0.40
+    textWeight    = isLong ? 0.25 : 0.30
+    crossWeight   = 0.15
+  } else {
+    aiWeight      = 0
+    accountWeight = 0.35
+    textWeight    = isLong ? 0.45 : 0.50
+    crossWeight   = isLong ? 0.20 : 0.15
+  }
 
   let final =
     accountResult.score * accountWeight +
@@ -51,7 +65,7 @@ export function scoreComment({ comment, aiScore, authorProfile }: ScorerInput): 
     crossResult.score * crossWeight +
     aiScore * aiWeight
 
-  // Author-level floor: if author consistently posts AI content, raise floor to 75%
+  // Author-level floor: if this author consistently posts AI content, raise floor to 75%
   if (authorProfile && authorProfile.totalScored >= 3 && authorProfile.aiPercent >= 0.80) {
     final = Math.max(final, 0.75)
   }
