@@ -24,10 +24,11 @@ Overlays a color-coded badge on each comment. Fully local, no backend required.
 - Author override: if authorAIPercent ≥ 0.80 and totalScored ≥ 3 → floor score at 75%
 
 ## AI classifier
-- Model: tomaarsen/slop-detector-mini-2 via Transformers.js
-- Loads on first use (~45MB), cached in IndexedDB
+- Model: Hello-SimpleAI/chatgpt-detector-roberta via Transformers.js
+- Trained on ChatGPT-3.5/4 vs human text; good at catching engagement farm outputs
+- Loads on first use (~120MB quantized), cached via Cache API
 - Runs in background Service Worker only
-- Returns { label: 'AI'|'HUMAN', score: 0-1 }
+- Returns { label: 'ChatGPT'|'Human', score: 0-1 } — 'ChatGPT' = AI-generated
 
 ## YouTube API
 - User supplies their own API key (stored in chrome.storage.local)
