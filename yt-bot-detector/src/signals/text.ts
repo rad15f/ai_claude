@@ -14,6 +14,12 @@ const PROMO_KEYWORDS = [
   'dm me', 'dm for', 'click link', 'link in bio', 'link in my bio',
   'free followers', 'get followers', 'buy followers',
   'i make $', 'i earn $', 'i made $',
+  // Scam-specific evasion terms — deliberate misspellings/abbreviations
+  // that real users almost never write but scammers use to bypass filters
+  'tgram',     // Telegram abbreviation used by scam networks
+  't.me/',     // raw Telegram link (our URL regex requires https://, this catches the rest)
+  'ph#',       // phone number abbreviation used to evade detection
+  'ph #',
 ]
 
 const TEMPLATE_PATTERNS = [
@@ -38,42 +44,42 @@ export function scoreTextSignals(text: string): TextSignalResult {
 
   // 1. URL signals — mutually exclusive (else-if): external URL takes precedence
   if (/https?:\/\/(?!(?:www\.)?youtu(?:be\.com|\.be))[^\s]+/.test(text)) {
-    fired.push(0.55)
+    fired.push(0.65)   // raised from 0.55 to compensate for prob-OR dampening
     signals.push('External URL')
   } else if (
     /\b\w+[·•․‧⋅◦⦁⦿・･•·◦∙⋅\[\(](?:dot|com|net|org|io|co)\b/i.test(text) ||
     /\b\w+\s*\(dot\)\s*\w{2,6}\b/i.test(text) ||
     /\b\w+\s+dot\s+(?:com|net|org|io|co)\b/i.test(text)
   ) {
-    fired.push(0.45)
+    fired.push(0.55)   // raised from 0.45
     signals.push('Disguised URL')
   }
 
   // 2. Hashtag spam — 3 or more hashtags
   const hashtagCount = (text.match(/#\w+/g) ?? []).length
   if (hashtagCount >= 3) {
-    fired.push(0.20)
+    fired.push(0.30)   // raised from 0.20
     signals.push(`Hashtag spam (${hashtagCount} tags)`)
   }
 
   // 3. Promotional keywords
   const foundPromo = PROMO_KEYWORDS.find(kw => lower.includes(kw))
   if (foundPromo) {
-    fired.push(0.30)
+    fired.push(0.40)   // raised from 0.30
     signals.push(`Promo: "${foundPromo}"`)
   }
 
   // 4. Income template fill-in
   const foundTemplate = TEMPLATE_PATTERNS.find(p => p.test(text))
   if (foundTemplate) {
-    fired.push(0.30)
+    fired.push(0.40)   // raised from 0.30
     signals.push('Income template')
   }
 
   // 5. Emoji-only or very short comment — <4 words
   const emojiOnly = /^[\p{Emoji}\s]+$/u.test(text.trim())
   if (emojiOnly || wordCount < 4) {
-    fired.push(0.10)
+    fired.push(0.12)   // raised from 0.10
     signals.push('Very short / emoji-only')
   }
 
@@ -82,25 +88,25 @@ export function scoreTextSignals(text: string): TextSignalResult {
   if (letters.length > 8) {
     const upperRatio = (text.match(/[A-Z]/g) ?? []).length / letters.length
     if (upperRatio > 0.6) {
-      fired.push(0.10)
+      fired.push(0.12)   // raised from 0.10
       signals.push('Excessive caps')
     }
   }
 
   // 7. Repeated characters: "heeelllo", "!!!!!!"
   if (/(.)\1{4,}/.test(text)) {
-    fired.push(0.08)
+    fired.push(0.10)   // raised from 0.08
     signals.push('Repeated characters')
   }
 
   // 8. Non-ASCII / zero-width spam characters
   if (/[​-‍﻿­]/.test(text)) {
-    fired.push(0.10)
+    fired.push(0.12)   // raised from 0.10
     signals.push('Zero-width characters')
   } else {
     const nonAsciiRatio = (text.match(/[^\x00-\x7F]/g) ?? []).length / text.length
     if (nonAsciiRatio > 0.35 && wordCount > 4) {
-      fired.push(0.08)
+      fired.push(0.10)   // raised from 0.08
       signals.push('High non-ASCII ratio')
     }
   }
