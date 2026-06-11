@@ -8,6 +8,11 @@ import { pipeline, env } from '@xenova/transformers'
 // Disable local-model lookup — the extension has no /models/ directory.
 ;(env as Record<string, unknown>)['allowLocalModels'] = false
 
+// Service Workers cannot spawn Worker threads — force single-threaded WASM.
+// Without this, onnxruntime picks ort-wasm-simd-threaded.wasm which calls
+// URL.createObjectURL() internally, an API unavailable in SW context.
+;(env as any).backends.onnx.wasm.numThreads = 1  // eslint-disable-line @typescript-eslint/no-explicit-any
+
 export interface AIDetectorResult {
   score: number   // 0–1, probability of AI-generated text
   ready: boolean  // false while all models are still loading or unavailable
