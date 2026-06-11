@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Convert Hello-SimpleAI/chatgpt-detector-roberta to ONNX + int8 for Transformers.js."""
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,30 +15,38 @@ REQUIRED_PACKAGES = [
     "transformers",
     "onnx",
     "onnxruntime",
+    "torch",
+    "huggingface_hub",
 ]
 
 
 def venv_python() -> Path:
-    if sys.prefix == str(VENV_DIR):
+    if sys.prefix == str(VENV_DIR.resolve()):
         return Path(sys.executable)
 
     if not VENV_DIR.exists():
         print(f"Creating virtualenv at {VENV_DIR}...")
-        subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
+        if shutil.which("uv"):
+            subprocess.check_call(["uv", "venv", str(VENV_DIR), "--python", "3.11"])
+        else:
+            subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
 
     return VENV_DIR / "bin" / "python"
 
 
 def ensure_packages() -> None:
     python = venv_python()
-    if python != Path(sys.executable):
-        # Re-exec inside the venv so imports resolve correctly.
+    if python.resolve() != Path(sys.executable).resolve():
         subprocess.check_call([str(python), __file__])
         raise SystemExit(0)
 
+    install_cmd = [str(python), "-m", "pip", "install", "-q", "--upgrade", "pip"]
+    if shutil.which("uv"):
+        install_cmd = ["uv", "pip", "install", "--python", str(python), "-q"]
+
     for package in REQUIRED_PACKAGES:
         print(f"Ensuring {package} is installed...")
-        subprocess.check_call([str(python), "-m", "pip", "install", "-q", package])
+        subprocess.check_call(install_cmd + [package])
 
 
 def export_to_onnx() -> None:
