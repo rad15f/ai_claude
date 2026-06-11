@@ -2,3 +2,7 @@ node_modules/
 dist/
 .DS_Store
 *.local
+
+# ONNX model files — hosted on HuggingFace (rad15f/chatgpt-detector-roberta-onnx)
+chatgpt-detector-roberta-onnx/
+.venv-onnx/
