@@ -9,7 +9,11 @@ import type {
 } from './types.js'
 import { scoreComment } from './scorer.js'
 import { registerComment } from './signals/crossComment.js'
-import { scoreAIText } from './signals/aiDetector.js'
+import { scoreAIText, warmupClassifier } from './signals/aiDetector.js'
+
+// Start loading the AI model immediately so it's warm when comments arrive.
+// Model is ~45 MB on first download, then served from Cache API.
+warmupClassifier()
 
 const CHANNEL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000  // 7 days
 const YT_API_BASE = 'https://www.googleapis.com/youtube/v3'
@@ -167,6 +171,7 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
       const scoreResult = scoreComment({
         comment,
         aiScore: aiResult.score,
+        aiReady: aiResult.ready,
         ...(authorProfile ? { authorProfile } : {}),
       })
 
