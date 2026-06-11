@@ -190,6 +190,22 @@ const BADGE_STYLES = `
 
 // ─── Batch processing ─────────────────────────────────────────────────────────
 
+// Set to false once a context-invalidated error is caught so we stop calling
+// Chrome APIs. Happens when the extension is reloaded while a YouTube tab is
+// still open — the old content script keeps running but its context is gone.
+let _contextAlive = true
+
+function contextAlive(): boolean {
+  if (!_contextAlive) return false
+  try {
+    // Accessing chrome.runtime.id throws synchronously when context is gone
+    return Boolean(chrome.runtime.id)
+  } catch {
+    _contextAlive = false
+    return false
+  }
+}
+
 async function getThreshold(): Promise<number> {
   const result = await chrome.storage.local.get('settings')
   const s = result['settings'] as { sensitivityThreshold?: number } | undefined
@@ -203,18 +219,30 @@ function scheduleBatch(): void {
 
 async function flushBatch(): Promise<void> {
   batchTimer = null
-  if (pendingComments.size === 0) return
+  if (pendingComments.size === 0 || !contextAlive()) return
 
-  const threshold = await getThreshold()
+  let threshold = 0.40
+  try {
+    threshold = await getThreshold()
+  } catch {
+    _contextAlive = false
+    return
+  }
 
   for (const [, comment] of pendingComments) {
+    if (!contextAlive()) break
     const msg: ExtensionMessage = { type: 'SCORE_COMMENT', comment }
-    chrome.runtime.sendMessage(msg, (response: ExtensionMessage | undefined) => {
-      void chrome.runtime.lastError
-      if (!response || response.type !== 'SCORE_COMMENT_RESULT') return
-      updateBadge(response.commentId, response.score)
-      recordScore(response.score, threshold)
-    })
+    try {
+      chrome.runtime.sendMessage(msg, (response: ExtensionMessage | undefined) => {
+        void chrome.runtime.lastError
+        if (!response || response.type !== 'SCORE_COMMENT_RESULT') return
+        updateBadge(response.commentId, response.score)
+        recordScore(response.score, threshold)
+      })
+    } catch {
+      _contextAlive = false
+      break
+    }
   }
 
   pendingComments.clear()
