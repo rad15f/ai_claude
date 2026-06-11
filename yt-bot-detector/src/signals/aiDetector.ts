@@ -10,97 +10,84 @@ import { pipeline, env } from '@xenova/transformers'
 
 export interface AIDetectorResult {
   score: number   // 0–1, probability of AI-generated text
-  ready: boolean  // false while both models are loading or unavailable
+  ready: boolean  // false while all models are still loading or unavailable
 }
 
-// ─── Model A: Hello-SimpleAI/chatgpt-detector-roberta ────────────────────────
-// Trained on ChatGPT-3.5/4 outputs vs human text — catches modern LLM generations.
-// Labels: 'ChatGPT' (AI) | 'Human'
+// Both models are from Hello-SimpleAI, trained on the same ChatGPT-3.5/4 vs
+// human dataset but with different architectures — RoBERTa-base and DistilBERT.
+// Architectural diversity means they have different decision boundaries and
+// different failure modes, which is the main benefit of ensembling.
+//
+// Neither ships a quantized ONNX — both require quantized: false.
+// Labels for both: 'ChatGPT' (AI) | 'Human'
 
-// ─── Model B: Xenova/roberta-base-openai-detector ────────────────────────────
-// Trained on GPT-2 outputs — catches simpler/cheaper generations common in
-// engagement farm bots running cost-optimised models.
-// Labels: 'Fake' (AI) | 'Real'
+const MODELS = [
+  { name: 'Hello-SimpleAI/chatgpt-detector-roberta',    isAI: (l: string) => l === 'CHATGPT' },
+  { name: 'Hello-SimpleAI/chatgpt-detector-distilbert', isAI: (l: string) => l === 'CHATGPT' },
+] as const
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Clf = any
 
-interface ClfState {
+interface ClfSlot {
   clf: Clf | null
   loading: boolean
   failed: boolean
 }
 
-const modelA: ClfState = { clf: null, loading: false, failed: false }
-const modelB: ClfState = { clf: null, loading: false, failed: false }
+const slots: ClfSlot[] = MODELS.map(() => ({ clf: null, loading: false, failed: false }))
 
-async function loadModel(state: ClfState, name: string): Promise<Clf | null> {
-  if (state.clf) return state.clf
-  if (state.failed || state.loading) return null
+async function loadSlot(index: number): Promise<Clf | null> {
+  const slot = slots[index]!
+  if (slot.clf) return slot.clf
+  if (slot.failed || slot.loading) return null
 
-  state.loading = true
+  const name = MODELS[index]!.name
+  slot.loading = true
   try {
-    state.clf = await pipeline('text-classification', name, { quantized: true })
+    slot.clf = await pipeline('text-classification', name, { quantized: false })
     console.log(`[ytbd] AI model ready: ${name}`)
   } catch (e) {
     console.warn(`[ytbd] AI model failed to load (${name}):`, e)
-    state.failed = true
+    slot.failed = true
   } finally {
-    state.loading = false
+    slot.loading = false
   }
-  return state.clf
+  return slot.clf
 }
 
-async function scoreWithModel(
-  state: ClfState,
-  name: string,
-  text: string,
-  isAILabel: (label: string) => boolean,
-): Promise<number | null> {
-  const clf = await loadModel(state, name)
+export function warmupClassifier(): void {
+  MODELS.forEach((_, i) => void loadSlot(i))
+}
+
+async function scoreSlot(index: number, text: string): Promise<number | null> {
+  const clf = await loadSlot(index)
   if (!clf) return null
 
+  const { isAI } = MODELS[index]!
   try {
     const raw = await (clf as Clf)(text, { truncation: true, max_length: 512 })
     const item: { label: string; score: number } = Array.isArray(raw) ? raw[0] : raw
     if (!item) return null
     const label = item.label.toUpperCase()
-    return isAILabel(label) ? item.score : 1 - item.score
+    return isAI(label) ? item.score : 1 - item.score
   } catch (e) {
-    console.warn(`[ytbd] Scoring error (${name}):`, e)
+    console.warn(`[ytbd] Scoring error (${MODELS[index]!.name}):`, e)
     return null
   }
-}
-
-export function warmupClassifier(): void {
-  void loadModel(modelA, 'Hello-SimpleAI/chatgpt-detector-roberta')
-  void loadModel(modelB, 'Xenova/roberta-base-openai-detector')
 }
 
 export async function scoreAIText(text: string): Promise<AIDetectorResult> {
   const wordCount = text.trim().split(/\s+/).length
   if (wordCount < 8) return { score: 0, ready: false }
 
-  // Run both models in parallel — whichever is ready contributes its score
-  const [scoreA, scoreB] = await Promise.all([
-    scoreWithModel(
-      modelA,
-      'Hello-SimpleAI/chatgpt-detector-roberta',
-      text,
-      label => label === 'CHATGPT',
-    ),
-    scoreWithModel(
-      modelB,
-      'Xenova/roberta-base-openai-detector',
-      text,
-      label => label === 'FAKE',
-    ),
-  ])
+  // Run all models in parallel — whichever is ready contributes its score
+  const scores = await Promise.all(MODELS.map((_, i) => scoreSlot(i, text)))
+  const available = scores.filter((s): s is number => s !== null)
 
-  const available = [scoreA, scoreB].filter((s): s is number => s !== null)
   if (available.length === 0) return { score: 0, ready: false }
 
-  // Probabilistic OR: independent evidence compounds naturally, result stays ≤ 1
+  // Probabilistic OR: each model's evidence compounds independently
   const combined = 1 - available.reduce((acc, s) => acc * (1 - s), 1)
   return { score: combined, ready: true }
 }
