@@ -1,74 +1,108 @@
 // Runs in background.ts (Service Worker) only — never import in content.ts.
-// @xenova/transformers fetches the model (~45 MB) from HuggingFace on first use
-// and caches it via the Cache API so subsequent SW restarts are fast.
+// Both models download from HuggingFace on first use and cache via Cache API.
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — package ships JS + JSDoc, no bundled .d.ts; skipLibCheck handles it
-import { pipeline } from '@xenova/transformers'
+import { pipeline, env } from '@xenova/transformers'
+
+// Disable local-model lookup — the extension has no /models/ directory.
+;(env as Record<string, unknown>)['allowLocalModels'] = false
 
 export interface AIDetectorResult {
   score: number   // 0–1, probability of AI-generated text
-  ready: boolean  // false while model is loading, failed, or text is too short
+  ready: boolean  // false while both models are loading or unavailable
 }
 
-// Module-level singletons so the classifier survives across message calls
-// within a single SW lifetime. Chrome may kill and restart the SW, in which
-// case the model reloads from the Cache API (fast) rather than re-downloading.
+// ─── Model A: Hello-SimpleAI/chatgpt-detector-roberta ────────────────────────
+// Trained on ChatGPT-3.5/4 outputs vs human text — catches modern LLM generations.
+// Labels: 'ChatGPT' (AI) | 'Human'
+
+// ─── Model B: Xenova/roberta-base-openai-detector ────────────────────────────
+// Trained on GPT-2 outputs — catches simpler/cheaper generations common in
+// engagement farm bots running cost-optimised models.
+// Labels: 'Fake' (AI) | 'Real'
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _clf: any = null
-let _loading = false
-let _failed = false
+type Clf = any
 
-async function getClassifier(): Promise<unknown> {
-  if (_clf) return _clf
-  if (_failed || _loading) return null
-
-  _loading = true
-  try {
-    _clf = await pipeline('text-classification', 'tomaarsen/slop-detector-mini-2', {
-      quantized: true,  // use int8-quantized ONNX — ~4x smaller, ~2x faster
-    })
-    console.log('[ytbd] AI classifier ready')
-  } catch (e) {
-    console.warn('[ytbd] AI classifier failed to load:', e)
-    _failed = true
-  } finally {
-    _loading = false
-  }
-  return _clf
+interface ClfState {
+  clf: Clf | null
+  loading: boolean
+  failed: boolean
 }
 
-/**
- * Kick off model download in the background. Call once when the SW starts so
- * the classifier is warm before the first comment arrives.
- */
+const modelA: ClfState = { clf: null, loading: false, failed: false }
+const modelB: ClfState = { clf: null, loading: false, failed: false }
+
+async function loadModel(state: ClfState, name: string): Promise<Clf | null> {
+  if (state.clf) return state.clf
+  if (state.failed || state.loading) return null
+
+  state.loading = true
+  try {
+    state.clf = await pipeline('text-classification', name, { quantized: true })
+    console.log(`[ytbd] AI model ready: ${name}`)
+  } catch (e) {
+    console.warn(`[ytbd] AI model failed to load (${name}):`, e)
+    state.failed = true
+  } finally {
+    state.loading = false
+  }
+  return state.clf
+}
+
+async function scoreWithModel(
+  state: ClfState,
+  name: string,
+  text: string,
+  isAILabel: (label: string) => boolean,
+): Promise<number | null> {
+  const clf = await loadModel(state, name)
+  if (!clf) return null
+
+  try {
+    const raw = await (clf as Clf)(text, { truncation: true, max_length: 512 })
+    const item: { label: string; score: number } = Array.isArray(raw) ? raw[0] : raw
+    if (!item) return null
+    const label = item.label.toUpperCase()
+    return isAILabel(label) ? item.score : 1 - item.score
+  } catch (e) {
+    console.warn(`[ytbd] Scoring error (${name}):`, e)
+    return null
+  }
+}
+
 export function warmupClassifier(): void {
-  void getClassifier()
+  void loadModel(modelA, 'Hello-SimpleAI/chatgpt-detector-roberta')
+  void loadModel(modelB, 'Xenova/roberta-base-openai-detector')
 }
 
 export async function scoreAIText(text: string): Promise<AIDetectorResult> {
   const wordCount = text.trim().split(/\s+/).length
-  // Under 8 words: too little signal for a text classifier to be reliable
   if (wordCount < 8) return { score: 0, ready: false }
 
-  const clf = await getClassifier()
-  if (!clf) return { score: 0, ready: false }
+  // Run both models in parallel — whichever is ready contributes its score
+  const [scoreA, scoreB] = await Promise.all([
+    scoreWithModel(
+      modelA,
+      'Hello-SimpleAI/chatgpt-detector-roberta',
+      text,
+      label => label === 'CHATGPT',
+    ),
+    scoreWithModel(
+      modelB,
+      'Xenova/roberta-base-openai-detector',
+      text,
+      label => label === 'FAKE',
+    ),
+  ])
 
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const raw = await (clf as any)(text, { truncation: true, max_length: 512 })
-    const item: { label: string; score: number } = Array.isArray(raw) ? raw[0] : raw
-    if (!item) return { score: 0, ready: false }
+  const available = [scoreA, scoreB].filter((s): s is number => s !== null)
+  if (available.length === 0) return { score: 0, ready: false }
 
-    // Normalize label — model may return 'AI'/'HUMAN', 'LABEL_1'/'LABEL_0', etc.
-    const label = item.label.toUpperCase()
-    const isAI = label === 'AI' || label === 'LABEL_1' || label === 'POSITIVE'
-    const score = isAI ? item.score : 1 - item.score
-    return { score, ready: true }
-  } catch (e) {
-    console.warn('[ytbd] AI scoring error:', e)
-    return { score: 0, ready: false }
-  }
+  // Probabilistic OR: independent evidence compounds naturally, result stays ≤ 1
+  const combined = 1 - available.reduce((acc, s) => acc * (1 - s), 1)
+  return { score: combined, ready: true }
 }
 
 export function getAIWeight(text: string): number {
