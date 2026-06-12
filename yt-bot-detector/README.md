@@ -154,12 +154,20 @@ After any code change in watch mode, go to `chrome://extensions` and click the *
 ## Roadmap
 
 - [x] **Phase 1** — Extension scaffold, comment scraper, data model
-- [ ] **Phase 2** — Account signals + text heuristics live
-- [ ] **Phase 3** — Transformers.js AI classifier integrated
-- [ ] **Phase 4** — Popup dashboard + hide/filter controls
-- [ ] **Phase 5** — Optional shared backend (Express + PostgreSQL)
-- [ ] **Phase 6** — Accuracy evaluation, weight calibration
-- [ ] **Phase 7** — Chrome Web Store publication
+- [x] **Phase 2** — Account signals + text heuristics live
+- [x] **Phase 3** — Transformers.js AI classifier integrated (ensemble: RoBERTa + DistilBERT)
+- [x] **Phase 4** — Training data pipeline + fine-tuned YouTube bot comment classifier
+- [ ] **Phase 5** — Popup dashboard + hide/filter controls
+- [ ] **Phase 6** — Optional shared backend (Express + PostgreSQL)
+- [ ] **Phase 7** — Accuracy evaluation, weight calibration
+- [ ] **Phase 8** — Chrome Web Store publication
+
+### Model improvement backlog
+
+- [ ] **Diverse bot data** — generate bot comments using multiple models (GPT-4o, Gemini, Mistral, Llama) to reduce over-fit to Claude-Haiku output style
+- [ ] **Real bot scraping** — collect labeled bot comments from known spam accounts on YouTube instead of relying solely on synthetic data
+- [ ] **Human comment scraping** — scrape real YouTube comments via YouTube Data API v3 across diverse video categories for richer, more representative human examples (currently using a single static HuggingFace dataset)
+- [ ] **Periodic retraining** — bot patterns evolve; retrain on fresh data every few months
 
 ---
 
