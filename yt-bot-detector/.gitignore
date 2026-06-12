@@ -3,6 +3,10 @@ dist/
 .DS_Store
 *.local
 
-# ONNX model files — hosted on HuggingFace (rad15f/chatgpt-detector-roberta-onnx)
+# Model files — hosted on HuggingFace
 chatgpt-detector-roberta-onnx/
+models/
 .venv-onnx/
+
+# Training datasets — large CSVs, not needed in repo
+dataset/

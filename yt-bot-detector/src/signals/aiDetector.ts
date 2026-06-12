@@ -7,6 +7,9 @@ import { pipeline, env } from '@xenova/transformers'
 
 // Disable local-model lookup — the extension has no /models/ directory.
 ;(env as Record<string, unknown>)['allowLocalModels'] = false
+// Bypass Cache API — forces a fresh fetch from HuggingFace.
+// Remove this once both models are confirmed stable.
+;(env as Record<string, unknown>)['useBrowserCache'] = false
 
 // Service Workers cannot spawn Worker threads — force single-threaded WASM.
 // Without this, onnxruntime picks ort-wasm-simd-threaded.wasm which calls
@@ -27,17 +30,14 @@ export interface AIDetectorResult {
 // Labels for both: 'ChatGPT' (AI) | 'Human'
 
 // SLOT 0 — ChatGPT-3.5/4 vs human detector, ONNX-converted and hosted on HuggingFace.
-//           Labels: 'ChatGPT' (AI) | 'Human'. quantized: true → loads model_quantized.onnx (125 MB).
+//           Labels: 'CHATGPT' (AI) | 'HUMAN'. quantized: true → loads model_quantized.onnx (125 MB).
 //
-// SLOT 1 — *** PLACEHOLDER — DO NOT SHIP TO PRODUCTION ***
-// Xenova/toxic-bert detects toxic content, NOT AI-generated text.
-// Engagement farm bots ("great video! keep it up!") score near-zero on toxicity
-// while being obvious bots — this signal is directionally wrong for the hardest cases.
-// Replace with a second real ONNX AI detector (e.g. a different architecture trained
-// on the same task) once one is available.
+// SLOT 1 — YouTube-specific bot comment detector, fine-tuned DistilBERT.
+//           Trained on 4380 Claude-generated bot comments vs 4380 real YouTube comments.
+//           Labels: 'bot' | 'human'. quantized: true → loads model_quantized.onnx (64 MB).
 const MODELS = [
-  { name: 'rad15f/chatgpt-detector-roberta-onnx', isAI: (l: string) => l === 'CHATGPT', quantized: true  },
-  { name: 'Xenova/toxic-bert',                     isAI: (l: string) => l === 'TOXIC',   quantized: true  },
+  { name: 'rad15f/chatgpt-detector-roberta-onnx', isAI: (l: string) => l === 'CHATGPT', quantized: true },
+  { name: 'rad15f/yt-bot-comment-detector',        isAI: (l: string) => l === 'BOT',     quantized: true },
 ] as const
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
