@@ -29,18 +29,14 @@ export function scoreComment({ comment, aiScore, aiReady, authorProfile }: Score
 
   // ─── Weight sets ────────────────────────────────────────────────────────────
   //
-  // Phase 3 (AI classifier active):
-  //   Short (<50 words): account 40% + text 30% + cross 15% + AI 15% = 100%
-  //   Long  (≥50 words): account 35% + text 25% + cross 15% + AI 25% = 100%
+  // AI classifier active (weights intentionally sum > 1 — each signal is an
+  // independent evidence source, not a probability partition):
+  //   Short (<50 words): account 40% + text 30% + cross 15% + AI 50%
+  //   Long  (≥50 words): account 35% + text 25% + cross 15% + AI 50%
   //
-  // Phase 2 fallback (model loading / unavailable — AI weight redistributed):
-  //   Short (<50 words): account 35% + text 50% + cross 15% + AI  0% = 100%
-  //   Long  (≥50 words): account 35% + text 45% + cross 20% + AI  0% = 100%
-  //
-  // Rationale: when AI is absent, text carries the primary linguistic signal.
-  // Cross-comment weight rises on long comments because verbatim repetition of
-  // long text is a very strong bot indicator even without AI classification.
-  // ─────────────────────────────────────────────────────────────────────────────
+  // Fallback (model loading / unavailable — AI weight redistributed):
+  //   Short (<50 words): account 35% + text 50% + cross 15%
+  //   Long  (≥50 words): account 35% + text 45% + cross 20%
 
   let aiWeight: number
   let accountWeight: number
@@ -48,7 +44,7 @@ export function scoreComment({ comment, aiScore, aiReady, authorProfile }: Score
   let crossWeight: number
 
   if (aiReady) {
-    aiWeight      = isLong ? 0.25 : 0.15
+    aiWeight      = 0.50
     accountWeight = isLong ? 0.35 : 0.40
     textWeight    = isLong ? 0.25 : 0.30
     crossWeight   = 0.15

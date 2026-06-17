@@ -5,25 +5,75 @@ export interface CrossCommentSignalResult {
   signals: string[]
 }
 
-// Session cache: commentId → Comment
+// ─── In-session state ─────────────────────────────────────────────────────────
+
+// commentId → Comment seen in this session
 const sessionComments: Map<string, Comment> = new Map()
 
-// Author history: authorKey → all their comments this session
+// authorKey → all their comments this session (self-repetition detection)
 const authorHistory: Map<string, Comment[]> = new Map()
-
-export function registerComment(comment: Comment): void {
-  sessionComments.set(comment.id, comment)
-
-  // Track every comment per author so we can detect self-repetition later
-  const authorKey = comment.author.channelId ?? comment.author.name
-  const history = authorHistory.get(authorKey) ?? []
-  history.push(comment)
-  authorHistory.set(authorKey, history)
-}
 
 export function clearSessionCache(): void {
   sessionComments.clear()
   authorHistory.clear()
+}
+
+// ─── Persistent cross-video store ─────────────────────────────────────────────
+//
+// Tracks normalized comment text → which video IDs it has appeared on across
+// ALL sessions. Loaded from chrome.storage.local on startup so cross-video
+// duplicates are caught even when the user visits videos in different sessions.
+//
+// Structure in storage: { xc_store: { [normalizedText]: videoId[] } }
+
+const XC_STORE_KEY = 'xc_store'
+const XC_MAX_ENTRIES = 8_000   // ~1-2 MB in storage; prune single-video entries first
+const XC_FLUSH_DELAY_MS = 2_000
+
+let xcStore: Map<string, string[]> = new Map()
+let xcDirty = false
+let xcFlushTimer: ReturnType<typeof setTimeout> | null = null
+
+export async function initCrossCommentStore(): Promise<void> {
+  const result = await chrome.storage.local.get(XC_STORE_KEY)
+  const raw = (result[XC_STORE_KEY] ?? {}) as Record<string, string[]>
+  xcStore = new Map(Object.entries(raw))
+  console.log(`[ytbd] crossComment: loaded ${xcStore.size} cross-video entries from storage`)
+}
+
+function scheduleFlush(): void {
+  if (xcFlushTimer !== null) return
+  xcFlushTimer = setTimeout(async () => {
+    xcFlushTimer = null
+    if (!xcDirty) return
+    xcDirty = false
+
+    // Prune single-video entries first when over limit
+    if (xcStore.size > XC_MAX_ENTRIES) {
+      for (const [key, vids] of xcStore) {
+        if (vids.length === 1) {
+          xcStore.delete(key)
+          if (xcStore.size <= XC_MAX_ENTRIES) break
+        }
+      }
+    }
+
+    await chrome.storage.local.set({ [XC_STORE_KEY]: Object.fromEntries(xcStore) })
+  }, XC_FLUSH_DELAY_MS)
+}
+
+function recordTextOnVideo(normalizedText: string, videoId: string): void {
+  if (normalizedText.length < 10 || !videoId) return
+  const existing = xcStore.get(normalizedText) ?? []
+  if (!existing.includes(videoId)) {
+    xcStore.set(normalizedText, [...existing, videoId])
+    xcDirty = true
+    scheduleFlush()
+  }
+}
+
+function getOtherVideosForText(normalizedText: string, currentVideoId: string): string[] {
+  return (xcStore.get(normalizedText) ?? []).filter(v => v !== currentVideoId)
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -51,7 +101,20 @@ function levenshtein(a: string, b: string, cap = 200): number {
   return dp[m]![n]!
 }
 
-// ─── Scorer ───────────────────────────────────────────────────────────────────
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+export function registerComment(comment: Comment): void {
+  sessionComments.set(comment.id, comment)
+
+  const authorKey = comment.author.channelId ?? comment.author.name
+  const history = authorHistory.get(authorKey) ?? []
+  history.push(comment)
+  authorHistory.set(authorKey, history)
+
+  // Persist this comment's text against its video so future sessions can detect
+  // cross-video duplicates even after the service worker restarts.
+  recordTextOnVideo(normalize(comment.text), comment.videoId)
+}
 
 export function scoreCrossCommentSignals(comment: Comment): CrossCommentSignalResult {
   const signals: string[] = []
@@ -60,11 +123,21 @@ export function scoreCrossCommentSignals(comment: Comment): CrossCommentSignalRe
   const normText = normalize(comment.text)
   if (normText.length < 10) return { score: 0, signals: [] }
 
+  // ── 1. Persistent cross-video duplicate (survives across sessions) ────────
+  const otherVideos = getOtherVideosForText(normText, comment.videoId)
+  if (otherVideos.length >= 2) {
+    score = Math.max(score, 0.75)
+    signals.push(`Cross-video duplicate (${otherVideos.length + 1} videos across sessions)`)
+  } else if (otherVideos.length === 1) {
+    score = Math.max(score, 0.45)
+    signals.push('Cross-video duplicate (2 videos across sessions)')
+  }
+
+  // ── 2. In-session exact/near duplicate from a different author ───────────
   let exactDupes = 0
   let nearDupes = 0
 
   for (const [id, other] of sessionComments) {
-    // Skip self and same author
     if (id === comment.id) continue
     if (other.author.channelId && other.author.channelId === comment.author.channelId) continue
 
@@ -74,7 +147,6 @@ export function scoreCrossCommentSignals(comment: Comment): CrossCommentSignalRe
     if (normText === otherNorm) {
       exactDupes++
     } else {
-      // Only run Levenshtein on similarly-lengthed texts to save CPU
       const lenDiff = Math.abs(normText.length - otherNorm.length)
       if (lenDiff < 20) {
         const dist = levenshtein(normText, otherNorm)
@@ -83,19 +155,17 @@ export function scoreCrossCommentSignals(comment: Comment): CrossCommentSignalRe
     }
   }
 
-  // Exact duplicate from a different author — very high signal (flat +0.50)
   if (exactDupes > 0) {
     score = Math.max(score, 0.50)
-    signals.push(`Exact duplicate (${exactDupes} other${exactDupes > 1 ? 's' : ''})`)
+    signals.push(`Exact duplicate in session (${exactDupes} other${exactDupes > 1 ? 's' : ''})`)
   }
 
-  // Near-duplicate — high signal (flat +0.30)
   if (nearDupes > 0) {
     score = Math.max(score, 0.30)
-    signals.push(`Near-duplicate (${nearDupes} similar)`)
+    signals.push(`Near-duplicate in session (${nearDupes} similar)`)
   }
 
-  // Username cluster: multiple @FirstnameSurname#### accounts
+  // ── 3. Username cluster: multiple @FirstnameSurname#### accounts ─────────
   const nameNumberPattern = /^@?[A-Z][a-z]+[A-Z][a-z]+\d{3,}$/
   if (nameNumberPattern.test(comment.author.name)) {
     let clusterCount = 0
@@ -110,8 +180,7 @@ export function scoreCrossCommentSignals(comment: Comment): CrossCommentSignalRe
     }
   }
 
-  // Same-author self-similarity: does this author keep posting near-identical text?
-  // registerComment already stored this comment, so exclude it by id when comparing.
+  // ── 4. Same-author self-similarity ───────────────────────────────────────
   const authorKey = comment.author.channelId ?? comment.author.name
   const prevByAuthor = (authorHistory.get(authorKey) ?? []).filter(c => c.id !== comment.id)
 

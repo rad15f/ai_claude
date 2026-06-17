@@ -29,6 +29,10 @@ const TEMPLATE_PATTERNS = [
   /\$[\d,.]+\s+in\s+(just\s+)?\d+\s+(days?|weeks?|hours?)/i,
 ]
 
+// Crypto ticker spam: $TOKEN$$ or $TOKEN$ (double/single dollar sign suffix used by bots
+// to evade simple keyword filters while still signalling a pumped coin)
+const TICKER_SPAM_RE = /\$[A-Z0-9]{2,12}\$\$?/g
+
 // ─── Scorer ───────────────────────────────────────────────────────────────────
 
 export function scoreTextSignals(text: string): TextSignalResult {
@@ -72,8 +76,15 @@ export function scoreTextSignals(text: string): TextSignalResult {
   // 4. Income template fill-in
   const foundTemplate = TEMPLATE_PATTERNS.find(p => p.test(text))
   if (foundTemplate) {
-    fired.push(0.40)   // raised from 0.30
+    fired.push(0.40)
     signals.push('Income template')
+  }
+
+  // 4b. Crypto ticker spam — $TOKEN$$ or $TOKEN$ suffix pattern used by pump bots
+  const tickerMatches = text.match(TICKER_SPAM_RE) ?? []
+  if (tickerMatches.length >= 1) {
+    fired.push(0.55)
+    signals.push(`Ticker spam: ${tickerMatches.slice(0, 2).join(', ')}`)
   }
 
   // 5. Emoji-only or very short comment — <4 words

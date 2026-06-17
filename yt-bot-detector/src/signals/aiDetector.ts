@@ -103,7 +103,6 @@ export async function scoreAIText(text: string): Promise<AIDetectorResult> {
 
   // Probabilistic OR: each model's evidence compounds independently
   const combined = 1 - available.reduce((acc, s) => acc * (1 - s), 1)
-  console.log(`[ytbd] AI scores — slot0=${scores[0]?.toFixed(3)} slot1=${scores[1]?.toFixed(3)} combined=${combined.toFixed(3)} | "${text.slice(0, 60)}"`)
   return { score: combined, ready: true }
 }
 

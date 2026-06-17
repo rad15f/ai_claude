@@ -89,9 +89,15 @@ export function scoreAccountSignals(profile: ChannelProfile): AccountSignalResul
   }
 
   // Probabilistic OR: each additional signal has diminishing impact
-  const score = fired.length === 0
+  let score = fired.length === 0
     ? 0
     : 1 - fired.reduce((acc, w) => acc * (1 - w), 1)
+
+  // Trust discount: public playlists require deliberate human curation
+  if (profile.hasPublicPlaylists) {
+    score *= 0.70
+    signals.push('Has public playlists (trust signal)')
+  }
 
   return { score, signals }
 }

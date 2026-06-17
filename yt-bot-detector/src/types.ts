@@ -5,10 +5,10 @@ export interface ChannelProfile {
   videoCount: number
   viewCount: number
   country: string | null
-  hasCustomAvatar: boolean
   hasBannerImage: boolean
   hasDescription: boolean
   hiddenSubscriberCount: boolean
+  hasPublicPlaylists: boolean
   fetchedAt: number
 }
 

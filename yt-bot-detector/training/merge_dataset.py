@@ -11,11 +11,21 @@ import csv
 import random
 from pathlib import Path
 
-DATASET_DIR = Path(__file__).parent.parent / "dataset"
-BOT_FILE    = DATASET_DIR / "bot_comments.csv"
-HUMAN_FILE  = DATASET_DIR / "human_comments.csv"
-OUTPUT_FILE = DATASET_DIR / "training_data.csv"
-FIELDNAMES  = ["text", "label", "archetype", "word_count", "topic"]
+DATASET_DIR      = Path(__file__).parent.parent / "dataset"
+HUMAN_FILE       = DATASET_DIR / "human_comments.csv"
+OUTPUT_FILE      = DATASET_DIR / "training_data.csv"
+FIELDNAMES       = ["text", "label", "archetype", "word_count", "topic"]
+
+# All bot sources — script skips any that don't exist yet.
+# Cap: None means use all rows; a number caps that source via random sample,
+# so no single model dominates the bot class (Haiku was 94% of bot data before this).
+BOT_SOURCES = [
+    (DATASET_DIR / "bot_comments.csv",        "Claude Haiku",     1400),
+    (DATASET_DIR / "bot_comments_llama.csv",  "Llama 3 (Groq)",   None),
+    (DATASET_DIR / "bot_comments_gpt.csv",    "GPT-4o mini",      None),
+    (DATASET_DIR / "bot_comments_gemini.csv", "Gemini Flash",     None),
+    (DATASET_DIR / "real_bot_comments.csv",   "Real scraped",     None),
+]
 
 
 def load_csv(path: Path) -> list[dict]:
@@ -24,15 +34,26 @@ def load_csv(path: Path) -> list[dict]:
 
 
 def main() -> None:
-    if not BOT_FILE.exists():
-        raise FileNotFoundError(f"Missing: {BOT_FILE}")
     if not HUMAN_FILE.exists():
         raise FileNotFoundError(f"Missing: {HUMAN_FILE}")
 
-    bots   = load_csv(BOT_FILE)
     humans = load_csv(HUMAN_FILE)
 
-    print(f"Bot comments:   {len(bots)}")
+    bots: list[dict] = []
+    random.seed(42)
+    for path, label, cap in BOT_SOURCES:
+        if path.exists():
+            rows = load_csv(path)
+            if cap is not None and len(rows) > cap:
+                rows = random.sample(rows, cap)
+                print(f"  {label:<22} {len(rows):>5} comments  (capped from more, {path.name})")
+            else:
+                print(f"  {label:<22} {len(rows):>5} comments  ({path.name})")
+            bots.extend(rows)
+        else:
+            print(f"  {label:<22}     — not found, skipping ({path.name})")
+
+    print(f"Bot comments:   {len(bots)} total")
     print(f"Human comments: {len(humans)}")
 
     # Balance: trim the larger class to match the smaller

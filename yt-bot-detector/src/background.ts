@@ -8,15 +8,23 @@ import type {
   StoredSettings,
 } from './types.js'
 import { scoreComment } from './scorer.js'
-import { registerComment } from './signals/crossComment.js'
+import { registerComment, initCrossCommentStore } from './signals/crossComment.js'
 import { scoreAIText, warmupClassifier } from './signals/aiDetector.js'
 
 // Start loading the AI model immediately so it's warm when comments arrive.
 // Model is ~45 MB on first download, then served from Cache API.
 warmupClassifier()
 
+// Load persisted cross-video comment store so duplicates are detected across
+// sessions, not just within the current service worker lifetime.
+initCrossCommentStore().catch(console.error)
+
 const CHANNEL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000  // 7 days
 const YT_API_BASE = 'https://www.googleapis.com/youtube/v3'
+
+// In-flight deduplication: if multiple comments from the same author arrive
+// before the first API response is cached, reuse the same promise.
+const pendingChannelFetches = new Map<string, Promise<ChannelProfile | null>>()
 
 // ─── Channel enrichment ───────────────────────────────────────────────────────
 
@@ -82,6 +90,18 @@ async function fetchChannelProfile(channelId: string, apiKey: string): Promise<C
     return null
   }
 
+  // Check for public playlists — real users typically organize content into playlists
+  const channelIdForPlaylist = item.id ?? channelId
+  let hasPublicPlaylists = false
+  try {
+    const plUrl = `${YT_API_BASE}/playlists?part=id&channelId=${encodeURIComponent(channelIdForPlaylist)}&maxResults=1&key=${encodeURIComponent(apiKey)}`
+    const plRes = await fetch(plUrl)
+    if (plRes.ok) {
+      const plData = await plRes.json() as { pageInfo?: { totalResults?: number } }
+      hasPublicPlaylists = (plData.pageInfo?.totalResults ?? 0) > 0
+    }
+  } catch { /* non-fatal */ }
+
   const profile: ChannelProfile = {
     channelId,
     accountCreatedAt: item.snippet.publishedAt,
@@ -89,10 +109,10 @@ async function fetchChannelProfile(channelId: string, apiKey: string): Promise<C
     videoCount: parseInt(item.statistics.videoCount ?? '0', 10),
     viewCount: parseInt(item.statistics.viewCount ?? '0', 10),
     country: item.snippet.country ?? null,
-    hasCustomAvatar: Boolean(item.snippet.thumbnails?.default?.url),
     hasBannerImage: Boolean(item.brandingSettings?.image?.bannerExternalUrl),
     hasDescription: Boolean(item.snippet.description?.trim()),
     hiddenSubscriberCount: item.statistics.hiddenSubscriberCount === true,
+    hasPublicPlaylists,
     fetchedAt: Date.now(),
   }
 
@@ -150,11 +170,19 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
         if (cached) {
           comment.channel = cached
         } else {
-          const fresh = await fetchChannelProfile(comment.author.channelId, settings.apiKey)
-          if (fresh) {
-            comment.channel = fresh
-            await cacheChannel(fresh)
+          const id = comment.author.channelId
+          // Reuse in-flight request if one is already pending for this channel
+          let pending = pendingChannelFetches.get(id)
+          if (!pending) {
+            pending = fetchChannelProfile(id, settings.apiKey).then(async profile => {
+              pendingChannelFetches.delete(id)
+              if (profile) await cacheChannel(profile)
+              return profile
+            })
+            pendingChannelFetches.set(id, pending)
           }
+          const fresh = await pending
+          if (fresh) comment.channel = fresh
         }
       }
 
@@ -198,11 +226,11 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
 // ─── YouTube API types (internal, not exported) ───────────────────────────────
 
 interface YoutubeChannelItem {
+  id: string
   snippet: {
     publishedAt: string
     description?: string
     country?: string
-    thumbnails?: { default?: { url: string } }
   }
   statistics: {
     subscriberCount?: string
